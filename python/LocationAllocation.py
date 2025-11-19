@@ -5,6 +5,10 @@ Find the best location for a new branch of a fast food restaurant to serve addit
 import datetime
 import arcgis
 import pandas as pd
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 def print_result(result):
@@ -265,7 +269,7 @@ def main():
 
 
     # Connect to the location-allocation service
-    api_key = "YOUR_ACCESS_TOKEN"
+    api_key = os.getenv("ARCGIS_API_KEY")
     arcgis.GIS("https://www.arcgis.com", api_key=api_key)
 
     # Get the walking time travel mode defined for the portal. Fail if the travel mode is not found.
