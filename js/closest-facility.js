@@ -49,7 +49,7 @@ export async function initClosestFacility(viewDiv, infoPanel) {
 
   const view = new MapView({
     container: viewDiv,
-    map: map,
+    map,
     center: [-122.67584, 45.52087],
     zoom: 14,
     constraints: {
@@ -57,18 +57,14 @@ export async function initClosestFacility(viewDiv, infoPanel) {
     },
   });
 
-  view.popup.actions = [];
-
   view.when(() => {
     addFacilityGraphics();
     findClosestFacility(addStartGraphic(view.center), facilitiesLayer.graphics);
   });
 
-  const clickHandler = view.on("click", (event) => {
+  view.on("click", (event) => {
     view.hitTest(event).then((response) => {
-      if (response.results.length === 1) {
-        findClosestFacility(addStartGraphic(event.mapPoint), facilitiesLayer.graphics);
-      }
+      findClosestFacility(addStartGraphic(event.mapPoint), facilitiesLayer.graphics);
     });
   });
 
@@ -145,7 +141,6 @@ export async function initClosestFacility(viewDiv, infoPanel) {
 
   // Return cleanup function
   return () => {
-    clickHandler.remove();
     view.destroy();
   };
 }
