@@ -1,6 +1,6 @@
 # Network Analyst - ArcGIS Tools
 
-A unified web application combining multiple ArcGIS network analysis tools into a single, cohesive interface.
+A modern React web application combining multiple ArcGIS network analysis tools into a single, cohesive interface. Built with React, TypeScript, and Vite.
 
 ## Features
 
@@ -28,67 +28,92 @@ The application provides three powerful network analysis tools:
 
 ```
 network-analyst/
-├── index.html                      # Main entry point with dropdown selector
-├── config.js                       # ArcGIS API key configuration
-├── js/
-│   ├── main.js                     # Application controller and tool switcher
-│   ├── service-area.js            # Service Area analysis module
-│   ├── closest-facility.js        # Closest Facility routing module
-│   └── location-allocation.js     # Location Allocation module
-└── javascript/                     # Original individual HTML files (archived)
-    ├── ServiceArea.html
-    ├── ClosestFacility.html
-    └── LocationAllocation.html
+├── index.html                      # HTML template
+├── package.json                    # NPM dependencies and scripts
+├── tsconfig.json                   # TypeScript configuration
+├── vite.config.ts                  # Vite bundler configuration
+├── src/
+│   ├── App.tsx                     # Main React component with tool selector
+│   ├── index.tsx                   # React application entry point
+│   ├── config.ts                   # ArcGIS API key configuration
+│   ├── App.css                     # Application styles
+│   └── components/
+│       ├── ServiceArea.tsx         # Service Area analysis component
+│       ├── ClosestFacility.tsx     # Closest Facility routing component
+│       └── LocationAllocation.tsx  # Location Allocation component
+├── html/                           # Original standalone HTML files (archived)
+│   ├── ServiceArea.html
+│   ├── ClosestFacility.html
+│   └── LocationAllocation.html
+└── js/                             # Original JavaScript modules (archived)
+    ├── main.js
+    ├── service-area.js
+    ├── closest-facility.js
+    └── location-allocation.js
 ```
 
 ## Getting Started
 
-1. **Set up your ArcGIS API Key**
-   - Edit `config.js` and add your ArcGIS API key:
-   ```javascript
+### Prerequisites
+- Node.js (v16 or higher recommended)
+- npm or yarn package manager
+
+### Installation
+
+1. **Clone the repository and install dependencies**
+   ```bash
+   npm install
+   ```
+
+2. **Set up your ArcGIS API Key**
+   - Edit `src/config.ts` and add your ArcGIS API key:
+   ```typescript
    export const ARCGIS_API_KEY = 'your-api-key-here';
    ```
 
-2. **Run a local server**
-   - The application requires a web server due to ES6 module imports
-   - Using Python:
-     ```bash
-     python -m http.server 8000
-     ```
-   - Using Node.js:
-     ```bash
-     npx http-server -p 8000
-     ```
+3. **Run the development server**
+   ```bash
+   npm run dev
+   ```
+   The application will start at `http://localhost:3000`
 
-3. **Open in browser**
-   - Navigate to `http://localhost:8000/index.html`
-   - Use the dropdown menu to switch between tools
+4. **Build for production**
+   ```bash
+   npm run build
+   ```
+   The optimized production build will be created in the `dist/` folder.
+
+5. **Preview production build**
+   ```bash
+   npm run preview
+   ```
 
 ## How It Works
 
-The application uses a modular architecture:
+The application uses a React component-based architecture:
 
-- **index.html**: Provides the UI shell with a header, dropdown selector, and map container
-- **main.js**: Manages tool switching and cleanup between different analysis modes
-- **Tool modules**: Each analysis type is encapsulated in its own module that:
-  - Initializes the map and required ArcGIS components
-  - Sets up event handlers and user interactions
-  - Returns a cleanup function to properly dispose of resources
+- **App.tsx**: Main application component with tool selector dropdown and routing logic
+- **React Components**: Each analysis type is a self-contained React component:
+  - `ServiceArea.tsx`: Service area analysis with drive time visualization
+  - `ClosestFacility.tsx`: Closest facility routing with grocery store locations
+  - `LocationAllocation.tsx`: Optimal facility location analysis
+- **Component Lifecycle**: Each component manages its own:
+  - ArcGIS map view initialization and cleanup
+  - Event handlers and user interactions
+  - State management with React hooks
 
 When you switch tools via the dropdown:
-1. The previous tool's cleanup function is called
-2. The map view is destroyed and cleared
-3. The new tool is initialized with a fresh map instance
+1. The current component is unmounted and runs cleanup in `useEffect`
+2. The previous map view is properly destroyed
+3. The new component is mounted and initializes a fresh map instance
 
 ## Technologies Used
 
+- **React 18**: Component-based UI framework
+- **TypeScript**: Type-safe JavaScript development
+- **Vite**: Fast build tool and development server
 - **ArcGIS Maps SDK for JavaScript 4.34**: Mapping and spatial analysis
-- **ES6 Modules**: Modular JavaScript architecture
 - **ArcGIS REST Services**: Network analysis services (routing, service areas, location-allocation)
-
-## Original Files
-
-The original standalone HTML files are preserved in the `javascript/` folder for reference. The new modular structure extracts the JavaScript code into separate modules for better organization and maintainability.
 
 ## Future Enhancements
 
@@ -97,4 +122,3 @@ Potential improvements:
 - Save and export analysis results
 - Support custom facility and demand point inputs
 - Additional network analysis types (vehicle routing, origin-destination cost matrix)
-- Offline mode with local data
