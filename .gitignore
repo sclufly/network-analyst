@@ -1,3 +1,6 @@
 .venv/
 .env
-config.js
+*config*
+node_modules/
+dist/
+package-lock.json

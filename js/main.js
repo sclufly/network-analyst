@@ -1,4 +1,4 @@
-import { ARCGIS_API_KEY } from '../config.js';
+import { ARCGIS_API_KEY } from './config.js';
 import { initServiceArea } from './service-area.js';
 import { initClosestFacility } from './closest-facility.js';
 import { initLocationAllocation } from './location-allocation.js';
