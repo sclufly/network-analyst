@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Map from '@arcgis/core/Map';
 import MapView from '@arcgis/core/views/MapView';
 import * as networkService from '@arcgis/core/rest/networkService';
@@ -18,14 +18,73 @@ function ServiceArea() {
   const mapDiv = useRef<HTMLDivElement>(null);
   const viewRef = useRef<MapView | null>(null);
   const travelModeRef = useRef<any>(null);
+  const lastClickPointRef = useRef<__esri.Point | null>(null);
+  
+  const [numBreaks, setNumBreaks] = useState<number>(3);
+  const [breakSize, setBreakSize] = useState<number>(5);
+  
+  const url = "https://route-api.arcgis.com/arcgis/rest/services/World/ServiceAreas/NAServer/ServiceArea_World";
 
+  // memoize function to prevent unnecessary recreations
+  const runServiceAreaAnalysis = useCallback(async (point: __esri.Point) => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    view.graphics.removeAll();
+
+    // calculate break values from current state
+    const breakValues = Array.from({ length: numBreaks }, (_, i) => (i + 1) * breakSize);
+
+    // create location graphic
+    const locationGraphic = new Graphic({
+      geometry: point,
+      symbol: {
+        type: "simple-marker",
+        color: "white",
+        size: 8,
+      },
+    });
+    view.graphics.add(locationGraphic);
+
+    // fetch travel mode if not cached
+    if (!travelModeRef.current) {
+      const networkDescription = await networkService.fetchServiceDescription(url);
+      travelModeRef.current = networkDescription.supportedTravelModes?.find(
+        (travelMode) => travelMode.name === "Driving Time"
+      );
+    }
+
+    // solve service area
+    const serviceAreaParameters = new ServiceAreaParameters({
+      facilities: new FeatureSet({
+        features: [locationGraphic],
+      }),
+      defaultBreaks: breakValues,
+      travelMode: travelModeRef.current,
+      travelDirection: "from-facility",
+      outSpatialReference: view.spatialReference,
+      trimOuterPolygon: true,
+    });
+
+    const result = await serviceArea.solve(url, serviceAreaParameters);
+    
+    if (result.serviceAreaPolygons) {
+      const graphics = result.serviceAreaPolygons.features.map((g) => {
+        g.symbol = {
+          type: "simple-fill",
+          color: "rgba(255, 0, 0, 0.25)",
+        };
+        return g;
+      });
+      view.graphics.addMany(graphics, 0);
+    }
+  }, [numBreaks, breakSize]);
+
+  // initialize map only once
   useEffect(() => {
     if (!mapDiv.current) return;
 
-    // Set API key
     esriConfig.apiKey = ARCGIS_API_KEY;
-
-    const url = "https://route-api.arcgis.com/arcgis/rest/services/World/ServiceAreas/NAServer/ServiceArea_World";
 
     const map = new Map({
       basemap: "arcgis/navigation",
@@ -42,80 +101,130 @@ function ServiceArea() {
     });
 
     viewRef.current = view;
-
     view.ui.add(new ScaleBar({ view, style: "line" }), "bottom-right");
 
     view.when(() => {
-      createServiceAreas(view.center);
+      lastClickPointRef.current = view.center;
+      runServiceAreaAnalysis(view.center);
     });
-
-    const clickHandler = view.on("click", (event) => {
-      createServiceAreas(event.mapPoint);
-    });
-
-    function createServiceAreas(point: __esri.Point) {
-      view.graphics.removeAll();
-      const locationGraphic = createGraphic(point);
-      findServiceArea(locationGraphic);
-    }
-
-    function createGraphic(geometry: __esri.Point): Graphic {
-      const graphic = new Graphic({
-        geometry,
-        symbol: {
-          type: "simple-marker",
-          color: "white",
-          size: 8,
-        },
-      });
-      view.graphics.add(graphic);
-      return graphic;
-    }
-
-    async function findServiceArea(locationFeature: Graphic) {
-      if (!travelModeRef.current) {
-        const networkDescription = await networkService.fetchServiceDescription(url);
-        travelModeRef.current = networkDescription.supportedTravelModes?.find(
-          (travelMode) => travelMode.name === "Driving Time"
-        );
-      }
-
-      const serviceAreaParameters = new ServiceAreaParameters({
-        facilities: new FeatureSet({
-          features: [locationFeature],
-        }),
-        defaultBreaks: [5, 10, 15, 20], // mins
-        travelMode: travelModeRef.current,
-        travelDirection: "from-facility",
-        outSpatialReference: view.spatialReference,
-        trimOuterPolygon: true,
-      });
-
-      const result = await serviceArea.solve(url, serviceAreaParameters);
-      if (result.serviceAreaPolygons) {
-        showServiceAreas(result.serviceAreaPolygons);
-      }
-    }
-
-    function showServiceAreas(serviceAreaPolygons: FeatureSet) {
-      const graphics = serviceAreaPolygons.features.map((g) => {
-        g.symbol = {
-          type: "simple-fill",
-          color: "rgba(255, 0, 0, 0.25)",
-        };
-        return g;
-      });
-      view.graphics.addMany(graphics, 0);
-    }
 
     // Cleanup
     return () => {
-      clickHandler.remove();
       view.destroy();
     };
   }, []);
 
-  return <div ref={mapDiv} className="map-container" />;
+  // click handler - recreates when runServiceAreaAnalysis changes
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    const clickHandler = view.on("click", (event) => {
+      lastClickPointRef.current = event.mapPoint;
+      runServiceAreaAnalysis(event.mapPoint);
+    });
+
+    return () => {
+      clickHandler.remove();
+    };
+  }, [runServiceAreaAnalysis]);
+
+  const handleNumBreaksChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setNumBreaks(parseInt(e.target.value));
+  };
+
+  const handleBreakSizeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(e.target.value);
+    if (!isNaN(value) && value >= 1 && value <= 30) {
+      setBreakSize(value);
+    }
+  };
+
+  const handleUpdateMap = () => {
+    const point = lastClickPointRef.current;
+    if (point) {
+      runServiceAreaAnalysis(point);
+    }
+  };
+
+  return (
+    <>
+      <div ref={mapDiv} className="map-container" />
+      <div style={{
+        position: 'absolute',
+        top: '10px',
+        right: '10px',
+        backgroundColor: 'white',
+        padding: '10px',
+        borderRadius: '4px',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
+        zIndex: 1,
+        minWidth: '200px'
+      }}>
+        <div style={{ marginBottom: '10px', fontWeight: 'bold' }}>
+          Drive Time Breaks
+        </div>
+        
+        <div style={{ marginBottom: '10px' }}>
+          <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px' }}>
+            Number of breaks:
+          </label>
+          <select
+            value={numBreaks}
+            onChange={handleNumBreaksChange}
+            style={{
+              padding: '5px',
+              width: '100%',
+              border: '1px solid #ccc',
+              borderRadius: '3px'
+            }}
+          >
+            <option value={1}>1</option>
+            <option value={2}>2</option>
+            <option value={3}>3</option>
+            <option value={4}>4</option>
+            <option value={5}>5</option>
+          </select>
+        </div>
+
+        <div style={{ marginBottom: '10px' }}>
+          <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px' }}>
+            Break size (minutes):
+          </label>
+          <input
+            type="number"
+            min="1"
+            max="30"
+            value={breakSize}
+            onChange={handleBreakSizeChange}
+            style={{
+              padding: '5px',
+              width: '100%',
+              border: '1px solid #ccc',
+              borderRadius: '3px',
+              boxSizing: 'border-box'
+            }}
+          />
+        </div>
+
+        <button
+          onClick={handleUpdateMap}
+          style={{
+            padding: '8px 12px',
+            width: '100%',
+            backgroundColor: '#0079c1',
+            color: 'white',
+            border: 'none',
+            borderRadius: '3px',
+            cursor: 'pointer',
+            fontWeight: 'bold'
+          }}
+        >
+          Update Map
+        </button>
+      </div>
+    </>
+  );
 }
 
 export default ServiceArea;
