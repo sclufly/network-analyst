@@ -19,19 +19,40 @@ function ServiceArea() {
   const viewRef = useRef<MapView | null>(null);
   const travelModeRef = useRef<any>(null);
   const lastClickPointRef = useRef<__esri.Point | null>(null);
+  const serviceAreaGraphicsRef = useRef<Graphic[]>([]);
+  const clickMarkerRef = useRef<Graphic | null>(null);
+  const uploadedLocationGraphicsRef = useRef<Graphic[]>([]);
   
   const [numBreaks, setNumBreaks] = useState<number>(3);
   const [breakSize, setBreakSize] = useState<number>(5);
   const [travelModeName, setTravelModeName] = useState<string>("Driving Time");
+  const [uploadedLocations, setUploadedLocations] = useState<any[]>([]);
+  const [isSelectionMode, setIsSelectionMode] = useState<boolean>(false);
   
   const url = "https://route-api.arcgis.com/arcgis/rest/services/World/ServiceAreas/NAServer/ServiceArea_World";
+
+  // update cursor style when selection mode changes
+  useEffect(() => {
+    const view = viewRef.current;
+    if (view && view.container) {
+      view.container.style.cursor = isSelectionMode ? 'crosshair' : 'default';
+    }
+  }, [isSelectionMode]);
 
   // memoize function to prevent unnecessary recreations
   const runServiceAreaAnalysis = useCallback(async (point: __esri.Point) => {
     const view = viewRef.current;
     if (!view) return;
 
-    view.graphics.removeAll();
+    // remove previous service area graphics and click marker
+    if (clickMarkerRef.current) {
+      view.graphics.remove(clickMarkerRef.current);
+      clickMarkerRef.current = null;
+    }
+    if (serviceAreaGraphicsRef.current.length > 0) {
+      view.graphics.removeMany(serviceAreaGraphicsRef.current);
+      serviceAreaGraphicsRef.current = [];
+    }
 
     // calculate break values from current state
     const breakValues = Array.from({ length: numBreaks }, (_, i) => (i + 1) * breakSize);
@@ -46,6 +67,7 @@ function ServiceArea() {
       },
     });
     view.graphics.add(locationGraphic);
+    clickMarkerRef.current = locationGraphic;
 
     // fetch travel mode based on current selection
     const networkDescription = await networkService.fetchServiceDescription(url);
@@ -76,6 +98,7 @@ function ServiceArea() {
         return g;
       });
       view.graphics.addMany(graphics, 0);
+      serviceAreaGraphicsRef.current = graphics;
     }
   }, [numBreaks, breakSize, travelModeName]);
 
@@ -104,7 +127,6 @@ function ServiceArea() {
 
     view.when(() => {
       lastClickPointRef.current = view.center;
-      runServiceAreaAnalysis(view.center);
     });
 
     // Cleanup
@@ -113,20 +135,41 @@ function ServiceArea() {
     };
   }, []);
 
-  // click handler - recreates when runServiceAreaAnalysis changes
+  // click handler - only sets location when in selection mode
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
 
     const clickHandler = view.on("click", (event) => {
-      lastClickPointRef.current = event.mapPoint;
-      runServiceAreaAnalysis(event.mapPoint);
+      if (isSelectionMode) {
+        lastClickPointRef.current = event.mapPoint;
+        // add a temporary marker to show selected location
+        if (clickMarkerRef.current) {
+          view.graphics.remove(clickMarkerRef.current);
+        }
+        const tempMarker = new Graphic({
+          geometry: event.mapPoint,
+          symbol: {
+            type: "simple-marker",
+            color: "yellow",
+            size: 10,
+            outline: {
+              color: "white",
+              width: 2
+            }
+          }
+        });
+        view.graphics.add(tempMarker);
+        clickMarkerRef.current = tempMarker;
+        // exit selection mode after selecting
+        setIsSelectionMode(false);
+      }
     });
 
     return () => {
       clickHandler.remove();
     };
-  }, [runServiceAreaAnalysis]);
+  }, [isSelectionMode]);
 
   const handleNumBreaksChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     setNumBreaks(parseInt(e.target.value));
@@ -143,6 +186,41 @@ function ServiceArea() {
     setTravelModeName(e.target.value);
   };
 
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const geojson = JSON.parse(event.target?.result as string);
+        const locations: any[] = [];
+
+        if (geojson.type === 'FeatureCollection' && geojson.features) {
+          geojson.features.forEach((feature: any) => {
+            if (feature.geometry && feature.geometry.coordinates) {
+              const coords = feature.geometry.coordinates;
+              // handle different geometry types
+              if (feature.geometry.type === 'Point') {
+                locations.push({ longitude: coords[0], latitude: coords[1], properties: feature.properties });
+              } else if (feature.geometry.type === 'MultiPoint') {
+                coords.forEach((coord: number[]) => {
+                  locations.push({ longitude: coord[0], latitude: coord[1], properties: feature.properties });
+                });
+              }
+            }
+          });
+        }
+
+        setUploadedLocations(locations);
+      } catch (error) {
+        console.error('Error parsing GeoJSON:', error);
+        alert('Error parsing GeoJSON file. Please check the file format.');
+      }
+    };
+    reader.readAsText(file);
+  };
+
   const handleUpdateMap = () => {
     const point = lastClickPointRef.current;
     if (point) {
@@ -150,24 +228,97 @@ function ServiceArea() {
     }
   };
 
+  const handleToggleSelectionMode = () => {
+    setIsSelectionMode(!isSelectionMode);
+  };
+
+  // render uploaded locations on the map (persists across all interactions)
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    // remove previous uploaded location graphics
+    if (uploadedLocationGraphicsRef.current.length > 0) {
+      view.graphics.removeMany(uploadedLocationGraphicsRef.current);
+      uploadedLocationGraphicsRef.current = [];
+    }
+
+    if (uploadedLocations.length === 0) return;
+
+    // add uploaded location points
+    const graphics: Graphic[] = [];
+    uploadedLocations.forEach(location => {
+      const point = {
+        type: 'point',
+        longitude: location.longitude,
+        latitude: location.latitude
+      };
+
+      const graphic = new Graphic({
+        geometry: point as any,
+        symbol: {
+          type: 'simple-marker',
+          color: [0, 122, 194, 0.8],
+          size: 10,
+          outline: {
+            color: [255, 255, 255],
+            width: 2
+          }
+        } as any,
+        attributes: location.properties,
+        popupTemplate: location.properties ? {
+          title: location.properties.AGENCY_NAME || 'Location',
+          content: Object.entries(location.properties)
+            .filter(([key]) => key !== 'OBJECTID' && key !== '_id')
+            .map(([key, value]) => `<b>${key}:</b> ${value}`)
+            .join('<br>')
+        } : undefined
+      });
+
+      graphics.push(graphic);
+    });
+    
+    view.graphics.addMany(graphics);
+    uploadedLocationGraphicsRef.current = graphics;
+  }, [uploadedLocations]);
+
   return (
     <>
       <div ref={mapDiv} className="map-container" />
+      
+      {/* Service Area Settings - Left Side Top */}
       <div style={{
         position: 'absolute',
         top: '10px',
-        right: '10px',
+        left: '10px',
         backgroundColor: 'white',
         padding: '10px',
         borderRadius: '4px',
         boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
         zIndex: 1,
-        minWidth: '200px'
+        minWidth: '250px'
       }}>
         <div style={{ marginBottom: '10px', fontWeight: 'bold' }}>
-          Service Area Options
+          Service Area Settings
         </div>
         
+        <button
+          onClick={handleToggleSelectionMode}
+          style={{
+            padding: '8px 12px',
+            width: '100%',
+            backgroundColor: isSelectionMode ? '#28a745' : '#6c757d',
+            color: 'white',
+            border: 'none',
+            borderRadius: '3px',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            marginBottom: '10px'
+          }}
+        >
+          {isSelectionMode ? 'Selection Mode Active' : 'Select Location'}
+        </button>
+
         <div style={{ marginBottom: '10px' }}>
           <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px' }}>
             Travel mode:
@@ -242,8 +393,49 @@ function ServiceArea() {
             fontWeight: 'bold'
           }}
         >
-          Update Map
+          Run Analysis
         </button>
+      </div>
+
+      {/* Upload Locations - Left Side Bottom */}
+      <div style={{
+        position: 'absolute',
+        top: '350px',
+        left: '10px',
+        backgroundColor: 'white',
+        padding: '10px',
+        borderRadius: '4px',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
+        zIndex: 1,
+        minWidth: '250px'
+      }}>
+        <div style={{ marginBottom: '10px', fontWeight: 'bold' }}>
+          Upload Locations
+        </div>
+        
+        <div>
+          <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px' }}>
+            GeoJSON file:
+          </label>
+          <input
+            type="file"
+            accept=".geojson,.json"
+            onChange={handleFileUpload}
+            style={{
+              padding: '5px',
+              width: '100%',
+              border: '1px solid #ccc',
+              borderRadius: '3px',
+              fontSize: '12px',
+              boxSizing: 'border-box'
+            }}
+          />
+          {uploadedLocations.length > 0 && (
+            <div style={{ marginTop: '8px', padding: '8px', backgroundColor: '#e8f4f8', borderRadius: '3px', fontSize: '12px', color: '#0079c1', fontWeight: 'bold' }}>
+              ✓ {uploadedLocations.length} location(s) loaded
+            </div>
+          )}
+        </div>
       </div>
     </>
   );
