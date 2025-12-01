@@ -22,6 +22,7 @@ function ServiceArea() {
   
   const [numBreaks, setNumBreaks] = useState<number>(3);
   const [breakSize, setBreakSize] = useState<number>(5);
+  const [travelModeName, setTravelModeName] = useState<string>("Driving Time");
   
   const url = "https://route-api.arcgis.com/arcgis/rest/services/World/ServiceAreas/NAServer/ServiceArea_World";
 
@@ -46,13 +47,11 @@ function ServiceArea() {
     });
     view.graphics.add(locationGraphic);
 
-    // fetch travel mode if not cached
-    if (!travelModeRef.current) {
-      const networkDescription = await networkService.fetchServiceDescription(url);
-      travelModeRef.current = networkDescription.supportedTravelModes?.find(
-        (travelMode) => travelMode.name === "Driving Time"
-      );
-    }
+    // fetch travel mode based on current selection
+    const networkDescription = await networkService.fetchServiceDescription(url);
+    travelModeRef.current = networkDescription.supportedTravelModes?.find(
+      (travelMode) => travelMode.name === travelModeName
+    );
 
     // solve service area
     const serviceAreaParameters = new ServiceAreaParameters({
@@ -78,7 +77,7 @@ function ServiceArea() {
       });
       view.graphics.addMany(graphics, 0);
     }
-  }, [numBreaks, breakSize]);
+  }, [numBreaks, breakSize, travelModeName]);
 
   // initialize map only once
   useEffect(() => {
@@ -140,6 +139,10 @@ function ServiceArea() {
     }
   };
 
+  const handleTravelModeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setTravelModeName(e.target.value);
+  };
+
   const handleUpdateMap = () => {
     const point = lastClickPointRef.current;
     if (point) {
@@ -162,9 +165,28 @@ function ServiceArea() {
         minWidth: '200px'
       }}>
         <div style={{ marginBottom: '10px', fontWeight: 'bold' }}>
-          Drive Time Breaks
+          Service Area Options
         </div>
         
+        <div style={{ marginBottom: '10px' }}>
+          <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px' }}>
+            Travel mode:
+          </label>
+          <select
+            value={travelModeName}
+            onChange={handleTravelModeChange}
+            style={{
+              padding: '5px',
+              width: '100%',
+              border: '1px solid #ccc',
+              borderRadius: '3px'
+            }}
+          >
+            <option value="Driving Time">Driving Time</option>
+            <option value="Walking Time">Walking Time</option>
+          </select>
+        </div>
+
         <div style={{ marginBottom: '10px' }}>
           <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px' }}>
             Number of breaks:
