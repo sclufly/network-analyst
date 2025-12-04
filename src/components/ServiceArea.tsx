@@ -28,16 +28,29 @@ function ServiceArea() {
   const [numBreaks, setNumBreaks] = useState<number>(3);
   const [breakSize, setBreakSize] = useState<number>(5);
   const [travelModeName, setTravelModeName] = useState<string>("Driving Time");
-  const [uploadedLocations, setUploadedLocations] = useState<any[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<Array<{
+    name: string;
+    locations: any[];
+    color: string;
+    summaryCounts: Record<number, number>;
+    pointsByBreak: Record<number, Array<{name: string, id: string | number}>>;
+  }>>([]);
   const [isSelectionMode, setIsSelectionMode] = useState<boolean>(false);
-  const [summaryCounts, setSummaryCounts] = useState<Record<number, number>>({});
-  const [pointsByBreak, setPointsByBreak] = useState<Record<number, Array<{name: string, id: string | number}>>>({});
-  const [smallestBreakWithPoints, setSmallestBreakWithPoints] = useState<number | null>(null);
+  const [smallestBreakContainingAll, setSmallestBreakContainingAll] = useState<number | null>(null);
   const [hasServiceAreas, setHasServiceAreas] = useState<boolean>(false);
   const [hasUploadedPoints, setHasUploadedPoints] = useState<boolean>(false);
   const [legendItems, setLegendItems] = useState<Array<{breakValue: number, color: string}>>([]);
   
   const url = "https://route-api.arcgis.com/arcgis/rest/services/World/ServiceAreas/NAServer/ServiceArea_World";
+
+  // color palette for different uploaded files
+  const fileColors = [
+    'rgba(0, 122, 194, 0.8)',    // blue
+    'rgba(76, 175, 80, 0.8)',    // green
+    'rgba(255, 152, 0, 0.8)',    // orange
+    'rgba(156, 39, 176, 0.8)',   // purple
+    'rgba(255, 150, 190, 0.8)',  // pink
+  ];
 
   // calculate visual color based on opacity layering
   const calculateLayeredColor = (layerCount: number): string => {
@@ -143,9 +156,12 @@ function ServiceArea() {
       setHasServiceAreas(graphics.length > 0);
       
       // clear summary statistics - user needs to recalculate
-      setSummaryCounts({});
-      setPointsByBreak({});
-      setSmallestBreakWithPoints(null);
+      setUploadedFiles(prev => prev.map(file => ({
+        ...file,
+        summaryCounts: {},
+        pointsByBreak: {}
+      })));
+      setSmallestBreakContainingAll(null);
       
       // create legend items - sorted from smallest to largest
       const uniqueBreaks = [...new Set(graphics.map(g => g.attributes?.breakValue).filter((v): v is number => typeof v === 'number'))];
@@ -271,13 +287,27 @@ function ServiceArea() {
           });
         }
 
-        setUploadedLocations(locations);
+        const color = fileColors[uploadedFiles.length % fileColors.length];
+        // Clear all existing statistics when adding a new file
+        setUploadedFiles(prev => [
+          ...prev.map(f => ({ ...f, summaryCounts: {}, pointsByBreak: {} })),
+          {
+            name: file.name,
+            locations,
+            color,
+            summaryCounts: {},
+            pointsByBreak: {}
+          }
+        ]);
+        setSmallestBreakContainingAll(null);
       } catch (error) {
         console.error('Error parsing GeoJSON:', error);
         alert('Error parsing GeoJSON file. Please check the file format.');
       }
     };
     reader.readAsText(file);
+    // Clear the input so the same file can be re-uploaded
+    e.target.value = '';
   };
 
   const handleUpdateMap = () => {
@@ -291,72 +321,103 @@ function ServiceArea() {
     setIsSelectionMode(!isSelectionMode);
   };
 
+  const handleRemoveFile = (index: number) => {
+    setUploadedFiles(prev => prev.filter((_, i) => i !== index).map(f => ({ 
+      ...f, 
+      summaryCounts: {}, 
+      pointsByBreak: {} 
+    })));
+    setSmallestBreakContainingAll(null);
+  };
+
   const handleCalculateStats = () => {
     if (serviceAreaGraphicsRef.current.length === 0) {
       alert('No service area polygons. Run analysis first.');
       return;
     }
     
-    if (uploadedLocationGraphicsRef.current.length === 0) {
-      alert('No uploaded points.');
+    if (uploadedFiles.length === 0) {
+      alert('No uploaded files.');
       return;
     }
 
     const polygons = serviceAreaGraphicsRef.current;
-    const points = uploadedLocationGraphicsRef.current;
-    
-    // initialize counts and point lists for each break value
     const breakValues = [...new Set(polygons.map(p => p.attributes?.breakValue).filter((v): v is number => typeof v === 'number'))];
-    const counts: Record<number, number> = Object.fromEntries(breakValues.map(b => [b, 0]));
-    const pointsByBreak: Record<number, Array<{name: string, id: string | number}>> = Object.fromEntries(breakValues.map(b => [b, []]));
-
+    
     // sort polygons by break value (smallest first) for exclusive assignment
     const sortedPolygons = [...polygons].sort((a, b) => 
       (a.attributes?.breakValue ?? 0) - (b.attributes?.breakValue ?? 0)
     );
 
-    // assign each point to the smallest polygon that contains it
-    points.forEach((point, index) => {
-      if (!point.geometry) return;
+    // calculate stats for each file
+    const updatedFiles = uploadedFiles.map((file, fileIdx) => {
+      const counts: Record<number, number> = Object.fromEntries(breakValues.map(b => [b, 0]));
+      const pointsByBreak: Record<number, Array<{name: string, id: string | number}>> = Object.fromEntries(breakValues.map(b => [b, []]));
+      
+      const points = uploadedLocationGraphicsRef.current.filter(g => g.attributes?.fileIndex === fileIdx);
 
-      for (const polygon of sortedPolygons) {
-        const breakValue = polygon.attributes?.breakValue;
-        if (typeof breakValue !== 'number' || !polygon.geometry) continue;
+      // assign each point to the smallest polygon that contains it
+      points.forEach((point, index) => {
+        if (!point.geometry) return;
 
-        if (containsOperator.execute(polygon.geometry, point.geometry)) {
-          counts[breakValue]++;
-          
-          // extract name/ID from point attributes
-          const attrs = point.attributes || {};
-          
-          // find any property with 'name' in the key (case-insensitive)
-          let name = '';
-          const nameKey = Object.keys(attrs).find(key => key.toLowerCase().includes('name'));
-          if (nameKey) {
-            name = String(attrs[nameKey]);
-          } else {
-            // fallback to ID if no name property found
+        for (const polygon of sortedPolygons) {
+          const breakValue = polygon.attributes?.breakValue;
+          if (typeof breakValue !== 'number' || !polygon.geometry) continue;
+
+          if (containsOperator.execute(polygon.geometry, point.geometry)) {
+            counts[breakValue]++;
+            
+            // extract name/ID from point attributes
+            const attrs = point.attributes || {};
+            
+            // find any property with 'name' in the key (case-insensitive)
+            let name = '';
+            const nameKey = Object.keys(attrs).find(key => key.toLowerCase().includes('name'));
+            if (nameKey) {
+              name = String(attrs[nameKey]);
+            } else {
+              // fallback to ID if no name property found
+              const id = attrs.OBJECTID || attrs.id || attrs.ID || attrs._id || index + 1;
+              name = `Point ${id}`;
+            }
+            
             const id = attrs.OBJECTID || attrs.id || attrs.ID || attrs._id || index + 1;
-            name = `Point ${id}`;
+            
+            pointsByBreak[breakValue].push({ name, id });
+            break;
           }
-          
-          const id = attrs.OBJECTID || attrs.id || attrs.ID || attrs._id || index + 1;
-          
-          pointsByBreak[breakValue].push({ name, id });
-          break;
         }
-      }
+      });
+
+      return {
+        ...file,
+        summaryCounts: counts,
+        pointsByBreak
+      };
     });
 
-    setSummaryCounts(counts);
-    setPointsByBreak(pointsByBreak);
+    setUploadedFiles(updatedFiles);
 
-    // find smallest break with at least one point
-    const smallestBreak = breakValues
-      .filter(b => counts[b] > 0)
-      .sort((a, b) => a - b)[0] ?? null;
+    // find smallest break where at least one point from EACH file is contained
+    const sortedBreakValues = [...breakValues].sort((a, b) => a - b);
     
-    setSmallestBreakWithPoints(smallestBreak);
+    let smallestBreakForAll: number | null = null;
+    for (const breakValue of sortedBreakValues) {
+      // check if every file has at least one point in this break or smaller
+      const allFilesHavePoint = updatedFiles.every(file => {
+        const pointsUpToThisBreak = breakValues
+          .filter(b => b <= breakValue)
+          .reduce((sum, b) => sum + (file.summaryCounts[b] || 0), 0);
+        return pointsUpToThisBreak > 0;
+      });
+      
+      if (allFilesHavePoint) {
+        smallestBreakForAll = breakValue;
+        break;
+      }
+    }
+    
+    setSmallestBreakContainingAll(smallestBreakForAll);
   };
 
   // render uploaded locations on the map (persists across all interactions)
@@ -370,50 +431,61 @@ function ServiceArea() {
       uploadedLocationGraphicsRef.current = [];
     }
 
-    if (uploadedLocations.length === 0) return;
+    if (uploadedFiles.length === 0) {
+      setHasUploadedPoints(false);
+      return;
+    }
 
-    // add uploaded location points
+    // add uploaded location points from all files
     const graphics: Graphic[] = [];
-    uploadedLocations.forEach(location => {
-      const ptGeom = new Point({
-        longitude: location.longitude,
-        latitude: location.latitude,
-        spatialReference: view.spatialReference
-      });
+    uploadedFiles.forEach((file, fileIdx) => {
+      file.locations.forEach(location => {
+        const ptGeom = new Point({
+          longitude: location.longitude,
+          latitude: location.latitude,
+          spatialReference: view.spatialReference
+        });
 
-      const graphic = new Graphic({
-        geometry: ptGeom,
-        symbol: {
-          type: 'simple-marker',
-          color: [0, 122, 194, 0.8],
-          size: 10,
-          outline: {
-            color: [255, 255, 255],
-            width: 2
+        // Parse color string to array format
+        const colorMatch = file.color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+),?\s*([\d.]+)?\)/);
+        const color = colorMatch ? 
+          [parseInt(colorMatch[1]), parseInt(colorMatch[2]), parseInt(colorMatch[3]), parseFloat(colorMatch[4] || '1')] :
+          [0, 122, 194, 0.8];
+
+        const graphic = new Graphic({
+          geometry: ptGeom,
+          symbol: {
+            type: 'simple-marker',
+            color: color,
+            size: 10,
+            outline: {
+              color: [255, 255, 255],
+              width: 2
+            }
+          } as any,
+          attributes: {
+            ...location.properties,
+            fileIndex: fileIdx,
+            fileName: file.name
+          },
+          popupTemplate: {
+            title: location.properties?.AGENCY_NAME || location.properties?.name || 'Location',
+            content: `<b>File:</b> ${file.name}<br>` + 
+              (location.properties ? Object.entries(location.properties)
+                .filter(([key]) => key !== 'OBJECTID' && key !== '_id')
+                .map(([key, value]) => `<b>${key}:</b> ${value}`)
+                .join('<br>') : '')
           }
-        } as any,
-        attributes: location.properties,
-        popupTemplate: location.properties ? {
-          title: location.properties.AGENCY_NAME || 'Location',
-          content: Object.entries(location.properties)
-            .filter(([key]) => key !== 'OBJECTID' && key !== '_id')
-            .map(([key, value]) => `<b>${key}:</b> ${value}`)
-            .join('<br>')
-        } : undefined
-      });
+        });
 
-      graphics.push(graphic);
+        graphics.push(graphic);
+      });
     });
     
     view.graphics.addMany(graphics);
     uploadedLocationGraphicsRef.current = graphics;
     setHasUploadedPoints(graphics.length > 0);
-    
-    // clear summary statistics - user needs to recalculate
-    setSummaryCounts({});
-    setPointsByBreak({});
-    setSmallestBreakWithPoints(null);
-  }, [uploadedLocations]);
+  }, [uploadedFiles]);
 
   return (
     <>
@@ -566,25 +638,81 @@ function ServiceArea() {
         </div>
         
         <div>
-          <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px' }}>
-            GeoJSON file:
-          </label>
           <input
             type="file"
             accept=".geojson,.json"
             onChange={handleFileUpload}
-            style={{
-              padding: '5px',
-              width: '100%',
-              border: '1px solid #ccc',
-              borderRadius: '3px',
-              fontSize: '12px',
-              boxSizing: 'border-box'
-            }}
+            style={{ display: 'none' }}
+            id="file-upload-input"
           />
-          {uploadedLocations.length > 0 && (
-            <div style={{ marginTop: '8px', padding: '8px', backgroundColor: '#e8f4f8', borderRadius: '3px', fontSize: '12px', color: '#0079c1', fontWeight: 'bold' }}>
-              ✓ {uploadedLocations.length} location(s) loaded
+          <label htmlFor="file-upload-input">
+            <button
+              onClick={() => document.getElementById('file-upload-input')?.click()}
+              style={{
+                padding: '8px 12px',
+                width: '100%',
+                backgroundColor: '#0079c1',
+                color: 'white',
+                border: 'none',
+                borderRadius: '3px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                marginBottom: '8px'
+              }}
+            >
+              Add GeoJSON File
+            </button>
+          </label>
+          {uploadedFiles.length > 0 && (
+            <div style={{ marginTop: '8px' }}>
+              {uploadedFiles.map((file, index) => (
+                <div key={index} style={{ 
+                  display: 'flex', 
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '6px 8px', 
+                  marginBottom: '4px',
+                  backgroundColor: '#e8f4f8', 
+                  borderRadius: '3px', 
+                  fontSize: '12px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      width: '12px',
+                      height: '12px',
+                      backgroundColor: file.color,
+                      border: '1px solid white',
+                      borderRadius: '50%',
+                      marginRight: '6px',
+                      flexShrink: 0,
+                      boxShadow: '0 0 0 1px #ddd'
+                    }} />
+                    <span style={{ 
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap'
+                    }} title={file.name}>
+                      {file.name} ({file.locations.length})
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => handleRemoveFile(index)}
+                    style={{
+                      marginLeft: '8px',
+                      padding: '2px 6px',
+                      fontSize: '11px',
+                      backgroundColor: '#f44336',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '3px',
+                      cursor: 'pointer',
+                      flexShrink: 0
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -598,7 +726,7 @@ function ServiceArea() {
           boxShadow: '0 1px 2px rgba(0,0,0,0.3)'
         }}>
         <div style={{ marginBottom: '8px', fontWeight: 'bold' }}>
-          Summary
+          Summary Statistics
         </div>
 
         <button
@@ -620,53 +748,85 @@ function ServiceArea() {
           Calculate Stats
         </button>
 
-        {Object.keys(summaryCounts).length === 0 ? (
+        {uploadedFiles.length === 0 || uploadedFiles.every(f => Object.keys(f.summaryCounts).length === 0) ? (
           <div style={{ fontSize: '13px' }}>Click Calculate Stats to see results.</div>
         ) : (
           <>
-            {Object.keys(summaryCounts).sort((a, b) => parseInt(a) - parseInt(b)).map((k) => {
-              const breakValue = parseInt(k, 10);
-              const count = summaryCounts[breakValue];
-              const points = pointsByBreak[breakValue] || [];
-              
+            {uploadedFiles.map((file, fileIndex) => {
+              const hasStats = Object.keys(file.summaryCounts).length > 0;
+              if (!hasStats) return null;
+
               return (
-                <div key={k} style={{ marginBottom: '12px' }}>
-                  {count > 0 ? (
-                    <details style={{ cursor: 'pointer' }}>
-                      <summary style={{ 
-                        fontSize: '14px', 
-                        fontWeight: 'bold',
-                        color: '#333',
-                        listStyle: 'none',
-                        userSelect: 'none',
-                        display: 'flex',
-                        alignItems: 'center'
-                      }}>
-                        <span className="arrow" style={{ fontSize: '12px', color: '#666', marginRight: '6px', transition: 'transform 0.2s' }}>▶</span>
-                        <span>≤ {breakValue} min ({count} point{count !== 1 ? 's' : ''})</span>
-                      </summary>
-                      <div style={{ fontSize: '12px', paddingLeft: '20px', paddingTop: '4px', color: '#555' }}>
-                        {points.map((point, idx) => (
-                          <div key={idx} style={{ marginBottom: '2px' }}>
-                            • {point.name} (ID: {point.id})
+                <div key={fileIndex} style={{ marginBottom: '16px' }}>
+                  <div style={{
+                    fontSize: '13px',
+                    fontWeight: 'bold',
+                    color: '#0079c1',
+                    marginBottom: '8px',
+                    display: 'flex',
+                    alignItems: 'center'
+                  }}>
+                    <div style={{
+                      width: '12px',
+                      height: '12px',
+                      backgroundColor: file.color,
+                      border: '1px solid white',
+                      borderRadius: '50%',
+                      marginRight: '6px',
+                      flexShrink: 0,
+                      boxShadow: '0 0 0 1px #ddd'
+                    }} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={file.name}>
+                      {file.name}
+                    </span>
+                  </div>
+
+                  {Object.keys(file.summaryCounts).sort((a, b) => parseInt(a) - parseInt(b)).map((k) => {
+                    const breakValue = parseInt(k, 10);
+                    const count = file.summaryCounts[breakValue];
+                    const points = file.pointsByBreak[breakValue] || [];
+                    
+                    return (
+                      <div key={k} style={{ marginBottom: '8px', marginLeft: '18px' }}>
+                        {count > 0 ? (
+                          <details style={{ cursor: 'pointer' }}>
+                            <summary style={{ 
+                              fontSize: '13px', 
+                              fontWeight: 'bold',
+                              color: '#333',
+                              listStyle: 'none',
+                              userSelect: 'none',
+                              display: 'flex',
+                              alignItems: 'center'
+                            }}>
+                              <span className="arrow" style={{ fontSize: '11px', color: '#666', marginRight: '6px', transition: 'transform 0.2s' }}>▶</span>
+                              <span>≤ {breakValue} min ({count} point{count !== 1 ? 's' : ''})</span>
+                            </summary>
+                            <div style={{ fontSize: '12px', paddingLeft: '20px', paddingTop: '4px', color: '#555' }}>
+                              {points.map((point, idx) => (
+                                <div key={idx} style={{ marginBottom: '2px' }}>
+                                  • {point.name} (ID: {point.id})
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        ) : (
+                          <div style={{ 
+                            fontSize: '13px', 
+                            fontWeight: 'bold',
+                            color: '#333'
+                          }}>
+                            ≤ {breakValue} min ({count} point{count !== 1 ? 's' : ''})
                           </div>
-                        ))}
+                        )}
                       </div>
-                    </details>
-                  ) : (
-                    <div style={{ 
-                      fontSize: '14px', 
-                      fontWeight: 'bold',
-                      color: '#333'
-                    }}>
-                      ≤ {breakValue} min ({count} point{count !== 1 ? 's' : ''})
-                    </div>
-                  )}
+                    );
+                  })}
                 </div>
               );
             })}
             <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #eee', fontWeight: 'bold', fontSize: '13px', color: '#0079c1' }}>
-              {smallestBreakWithPoints ? `Smallest break containing any point: ${smallestBreakWithPoints} minutes` : 'No uploaded points inside service areas'}
+              {smallestBreakContainingAll ? `Smallest break with at least one point from each file: ${smallestBreakContainingAll} minutes` : 'Not all files have points within service areas'}
             </div>
           </>
         )}
@@ -674,7 +834,7 @@ function ServiceArea() {
       </div>
 
       {/* Legend - Top Right */}
-      {(legendItems.length > 0 || uploadedLocations.length > 0) && (
+      {(legendItems.length > 0 || uploadedFiles.length > 0) && (
         <div style={{
           position: 'absolute',
           top: '10px',
@@ -718,7 +878,7 @@ function ServiceArea() {
             </>
           )}
           
-          {uploadedLocations.length > 0 && (
+          {uploadedFiles.length > 0 && (
             <>
               <div style={{ 
                 fontSize: '12px', 
@@ -727,27 +887,31 @@ function ServiceArea() {
                 color: '#666',
                 fontWeight: '600'
               }}>
-                Uploaded Points
+                Uploaded Files
               </div>
-              <div style={{ 
-                display: 'flex', 
-                alignItems: 'center', 
-                marginBottom: '6px',
-                fontSize: '13px'
-              }}>
-                <div style={{
-                  width: '12px',
-                  height: '12px',
-                  backgroundColor: 'rgba(0, 122, 194, 0.8)',
-                  border: '2px solid white',
-                  borderRadius: '50%',
-                  marginRight: '8px',
-                  marginLeft: '9px',
-                  flexShrink: 0,
-                  boxShadow: '0 0 0 1px #ddd'
-                }} />
-                <span>Locations ({uploadedLocations.length})</span>
-              </div>
+              {uploadedFiles.map((file, index) => (
+                <div key={index} style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  marginBottom: '6px',
+                  fontSize: '13px'
+                }}>
+                  <div style={{
+                    width: '12px',
+                    height: '12px',
+                    backgroundColor: file.color,
+                    border: '2px solid white',
+                    borderRadius: '50%',
+                    marginRight: '8px',
+                    marginLeft: '9px',
+                    flexShrink: 0,
+                    boxShadow: '0 0 0 1px #ddd'
+                  }} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={file.name}>
+                    {file.name} ({file.locations.length})
+                  </span>
+                </div>
+              ))}
             </>
           )}
         </div>
