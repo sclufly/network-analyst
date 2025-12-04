@@ -8,6 +8,8 @@ import FeatureSet from '@arcgis/core/rest/support/FeatureSet';
 import Graphic from '@arcgis/core/Graphic';
 import ScaleBar from '@arcgis/core/widgets/ScaleBar';
 import esriConfig from '@arcgis/core/config';
+import * as containsOperator from '@arcgis/core/geometry/operators/containsOperator';
+import Point from '@arcgis/core/geometry/Point';
 import { ARCGIS_API_KEY } from '../config';
 
 /**
@@ -28,6 +30,10 @@ function ServiceArea() {
   const [travelModeName, setTravelModeName] = useState<string>("Driving Time");
   const [uploadedLocations, setUploadedLocations] = useState<any[]>([]);
   const [isSelectionMode, setIsSelectionMode] = useState<boolean>(false);
+  const [summaryCounts, setSummaryCounts] = useState<Record<number, number>>({});
+  const [smallestBreakWithPoints, setSmallestBreakWithPoints] = useState<number | null>(null);
+  const [hasServiceAreas, setHasServiceAreas] = useState<boolean>(false);
+  const [hasUploadedPoints, setHasUploadedPoints] = useState<boolean>(false);
   
   const url = "https://route-api.arcgis.com/arcgis/rest/services/World/ServiceAreas/NAServer/ServiceArea_World";
 
@@ -90,15 +96,32 @@ function ServiceArea() {
     const result = await serviceArea.solve(url, serviceAreaParameters);
     
     if (result.serviceAreaPolygons) {
-      const graphics = result.serviceAreaPolygons.features.map((g) => {
+      const features = result.serviceAreaPolygons.features || [];
+      const graphics = [] as any[];
+      features.forEach((g, i) => {
+        const geomType = g.geometry?.type;
+        if (!geomType || geomType.toLowerCase() !== 'polygon') {
+          return;
+        }
+
         g.symbol = {
           type: "simple-fill",
           color: "rgba(255, 0, 0, 0.25)",
         };
-        return g;
+        
+        // extract break value from service area attributes
+        const attrs = g.attributes || {};
+        const breakValue = attrs.ToBreak ?? attrs.breakValue ?? breakValues[i] ?? breakValues[0];
+        
+        g.attributes = {
+          ...attrs,
+          breakValue
+        };
+        graphics.push(g);
       });
       view.graphics.addMany(graphics, 0);
       serviceAreaGraphicsRef.current = graphics;
+      setHasServiceAreas(graphics.length > 0);
     }
   }, [numBreaks, breakSize, travelModeName]);
 
@@ -232,6 +255,54 @@ function ServiceArea() {
     setIsSelectionMode(!isSelectionMode);
   };
 
+  const handleCalculateStats = () => {
+    if (serviceAreaGraphicsRef.current.length === 0) {
+      alert('No service area polygons. Run analysis first.');
+      return;
+    }
+    
+    if (uploadedLocationGraphicsRef.current.length === 0) {
+      alert('No uploaded points.');
+      return;
+    }
+
+    const polygons = serviceAreaGraphicsRef.current;
+    const points = uploadedLocationGraphicsRef.current;
+    
+    // initialize counts for each break value
+    const breakValues = [...new Set(polygons.map(p => p.attributes?.breakValue).filter((v): v is number => typeof v === 'number'))];
+    const counts: Record<number, number> = Object.fromEntries(breakValues.map(b => [b, 0]));
+
+    // sort polygons by break value (smallest first) for exclusive assignment
+    const sortedPolygons = [...polygons].sort((a, b) => 
+      (a.attributes?.breakValue ?? 0) - (b.attributes?.breakValue ?? 0)
+    );
+
+    // assign each point to the smallest polygon that contains it
+    points.forEach((point) => {
+      if (!point.geometry) return;
+
+      for (const polygon of sortedPolygons) {
+        const breakValue = polygon.attributes?.breakValue;
+        if (typeof breakValue !== 'number' || !polygon.geometry) continue;
+
+        if (containsOperator.execute(polygon.geometry, point.geometry)) {
+          counts[breakValue]++;
+          break;
+        }
+      }
+    });
+
+    setSummaryCounts(counts);
+
+    // find smallest break with at least one point
+    const smallestBreak = breakValues
+      .filter(b => counts[b] > 0)
+      .sort((a, b) => a - b)[0] ?? null;
+    
+    setSmallestBreakWithPoints(smallestBreak);
+  };
+
   // render uploaded locations on the map (persists across all interactions)
   useEffect(() => {
     const view = viewRef.current;
@@ -248,14 +319,14 @@ function ServiceArea() {
     // add uploaded location points
     const graphics: Graphic[] = [];
     uploadedLocations.forEach(location => {
-      const point = {
-        type: 'point',
+      const ptGeom = new Point({
         longitude: location.longitude,
-        latitude: location.latitude
-      };
+        latitude: location.latitude,
+        spatialReference: view.spatialReference
+      });
 
       const graphic = new Graphic({
-        geometry: point as any,
+        geometry: ptGeom,
         symbol: {
           type: 'simple-marker',
           color: [0, 122, 194, 0.8],
@@ -280,6 +351,7 @@ function ServiceArea() {
     
     view.graphics.addMany(graphics);
     uploadedLocationGraphicsRef.current = graphics;
+    setHasUploadedPoints(graphics.length > 0);
   }, [uploadedLocations]);
 
   return (
@@ -436,6 +508,56 @@ function ServiceArea() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Summary Box - Right Top */}
+      <div style={{
+        position: 'absolute',
+        top: '10px',
+        right: '10px',
+        backgroundColor: 'white',
+        padding: '10px',
+        borderRadius: '4px',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
+        zIndex: 1,
+        minWidth: '220px'
+      }}>
+        <div style={{ marginBottom: '8px', fontWeight: 'bold' }}>
+          Summary
+        </div>
+
+        <button
+          onClick={handleCalculateStats}
+          disabled={!hasServiceAreas || !hasUploadedPoints}
+          style={{
+            padding: '6px 10px',
+            width: '100%',
+            backgroundColor: (hasServiceAreas && hasUploadedPoints) ? '#0079c1' : '#ccc',
+            color: 'white',
+            border: 'none',
+            borderRadius: '3px',
+            cursor: (hasServiceAreas && hasUploadedPoints) ? 'pointer' : 'not-allowed',
+            fontSize: '13px',
+            fontWeight: 'bold',
+            marginBottom: '10px'
+          }}
+        >
+          Calculate Stats
+        </button>
+
+        {Object.keys(summaryCounts).length === 0 ? (
+          <div style={{ fontSize: '13px' }}>Click Calculate Stats to see results.</div>
+        ) : (
+          <>
+            <div style={{ fontSize: '13px', marginBottom: '6px' }}>Points per travel time:</div>
+            {Object.keys(summaryCounts).map((k) => (
+              <div key={k} style={{ fontSize: '13px' }}>{k} min: {summaryCounts[parseInt(k, 10)]} point(s)</div>
+            ))}
+            <div style={{ marginTop: '8px', fontWeight: 'bold', fontSize: '13px' }}>
+              {smallestBreakWithPoints ? `Smallest break containing any point: ${smallestBreakWithPoints} minutes` : 'No uploaded points inside service areas'}
+            </div>
+          </>
+        )}
       </div>
     </>
   );
