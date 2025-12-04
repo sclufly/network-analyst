@@ -31,6 +31,7 @@ function ServiceArea() {
   const [uploadedLocations, setUploadedLocations] = useState<any[]>([]);
   const [isSelectionMode, setIsSelectionMode] = useState<boolean>(false);
   const [summaryCounts, setSummaryCounts] = useState<Record<number, number>>({});
+  const [pointsByBreak, setPointsByBreak] = useState<Record<number, Array<{name: string, id: string | number}>>>({});
   const [smallestBreakWithPoints, setSmallestBreakWithPoints] = useState<number | null>(null);
   const [hasServiceAreas, setHasServiceAreas] = useState<boolean>(false);
   const [hasUploadedPoints, setHasUploadedPoints] = useState<boolean>(false);
@@ -143,6 +144,7 @@ function ServiceArea() {
       
       // clear summary statistics - user needs to recalculate
       setSummaryCounts({});
+      setPointsByBreak({});
       setSmallestBreakWithPoints(null);
       
       // create legend items - sorted from smallest to largest
@@ -303,9 +305,10 @@ function ServiceArea() {
     const polygons = serviceAreaGraphicsRef.current;
     const points = uploadedLocationGraphicsRef.current;
     
-    // initialize counts for each break value
+    // initialize counts and point lists for each break value
     const breakValues = [...new Set(polygons.map(p => p.attributes?.breakValue).filter((v): v is number => typeof v === 'number'))];
     const counts: Record<number, number> = Object.fromEntries(breakValues.map(b => [b, 0]));
+    const pointsByBreak: Record<number, Array<{name: string, id: string | number}>> = Object.fromEntries(breakValues.map(b => [b, []]));
 
     // sort polygons by break value (smallest first) for exclusive assignment
     const sortedPolygons = [...polygons].sort((a, b) => 
@@ -313,7 +316,7 @@ function ServiceArea() {
     );
 
     // assign each point to the smallest polygon that contains it
-    points.forEach((point) => {
+    points.forEach((point, index) => {
       if (!point.geometry) return;
 
       for (const polygon of sortedPolygons) {
@@ -322,12 +325,31 @@ function ServiceArea() {
 
         if (containsOperator.execute(polygon.geometry, point.geometry)) {
           counts[breakValue]++;
+          
+          // extract name/ID from point attributes
+          const attrs = point.attributes || {};
+          
+          // find any property with 'name' in the key (case-insensitive)
+          let name = '';
+          const nameKey = Object.keys(attrs).find(key => key.toLowerCase().includes('name'));
+          if (nameKey) {
+            name = String(attrs[nameKey]);
+          } else {
+            // fallback to ID if no name property found
+            const id = attrs.OBJECTID || attrs.id || attrs.ID || attrs._id || index + 1;
+            name = `Point ${id}`;
+          }
+          
+          const id = attrs.OBJECTID || attrs.id || attrs.ID || attrs._id || index + 1;
+          
+          pointsByBreak[breakValue].push({ name, id });
           break;
         }
       }
     });
 
     setSummaryCounts(counts);
+    setPointsByBreak(pointsByBreak);
 
     // find smallest break with at least one point
     const smallestBreak = breakValues
@@ -389,11 +411,17 @@ function ServiceArea() {
     
     // clear summary statistics - user needs to recalculate
     setSummaryCounts({});
+    setPointsByBreak({});
     setSmallestBreakWithPoints(null);
   }, [uploadedLocations]);
 
   return (
     <>
+      <style>{`
+        details[open] > summary .arrow {
+          transform: rotate(90deg);
+        }
+      `}</style>
       <div ref={mapDiv} className="map-container" />
       
       {/* Left Sidebar - Scrollable */}
@@ -596,11 +624,48 @@ function ServiceArea() {
           <div style={{ fontSize: '13px' }}>Click Calculate Stats to see results.</div>
         ) : (
           <>
-            <div style={{ fontSize: '13px', marginBottom: '6px' }}>Points per travel time:</div>
-            {Object.keys(summaryCounts).map((k) => (
-              <div key={k} style={{ fontSize: '13px' }}>{k} min: {summaryCounts[parseInt(k, 10)]} point(s)</div>
-            ))}
-            <div style={{ marginTop: '8px', fontWeight: 'bold', fontSize: '13px' }}>
+            {Object.keys(summaryCounts).sort((a, b) => parseInt(a) - parseInt(b)).map((k) => {
+              const breakValue = parseInt(k, 10);
+              const count = summaryCounts[breakValue];
+              const points = pointsByBreak[breakValue] || [];
+              
+              return (
+                <div key={k} style={{ marginBottom: '12px' }}>
+                  {count > 0 ? (
+                    <details style={{ cursor: 'pointer' }}>
+                      <summary style={{ 
+                        fontSize: '14px', 
+                        fontWeight: 'bold',
+                        color: '#333',
+                        listStyle: 'none',
+                        userSelect: 'none',
+                        display: 'flex',
+                        alignItems: 'center'
+                      }}>
+                        <span className="arrow" style={{ fontSize: '12px', color: '#666', marginRight: '6px', transition: 'transform 0.2s' }}>▶</span>
+                        <span>≤ {breakValue} min ({count} point{count !== 1 ? 's' : ''})</span>
+                      </summary>
+                      <div style={{ fontSize: '12px', paddingLeft: '20px', paddingTop: '4px', color: '#555' }}>
+                        {points.map((point, idx) => (
+                          <div key={idx} style={{ marginBottom: '2px' }}>
+                            • {point.name} (ID: {point.id})
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  ) : (
+                    <div style={{ 
+                      fontSize: '14px', 
+                      fontWeight: 'bold',
+                      color: '#333'
+                    }}>
+                      ≤ {breakValue} min ({count} point{count !== 1 ? 's' : ''})
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #eee', fontWeight: 'bold', fontSize: '13px', color: '#0079c1' }}>
               {smallestBreakWithPoints ? `Smallest break containing any point: ${smallestBreakWithPoints} minutes` : 'No uploaded points inside service areas'}
             </div>
           </>
