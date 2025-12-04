@@ -34,8 +34,26 @@ function ServiceArea() {
   const [smallestBreakWithPoints, setSmallestBreakWithPoints] = useState<number | null>(null);
   const [hasServiceAreas, setHasServiceAreas] = useState<boolean>(false);
   const [hasUploadedPoints, setHasUploadedPoints] = useState<boolean>(false);
+  const [legendItems, setLegendItems] = useState<Array<{breakValue: number, color: string}>>([]);
   
   const url = "https://route-api.arcgis.com/arcgis/rest/services/World/ServiceAreas/NAServer/ServiceArea_World";
+
+  // calculate visual color based on opacity layering
+  const calculateLayeredColor = (layerCount: number): string => {
+    // base color: rgba(255, 0, 0, 0.25)
+    const baseAlpha = 0.25;
+    const r = 255, g = 0, b = 0;
+    
+    // calculate cumulative opacity when layering multiple semi-transparent polygons
+    const cumulativeAlpha = 1 - Math.pow(1 - baseAlpha, layerCount);
+    
+    // blend with white background
+    const finalR = Math.round(r * cumulativeAlpha + 255 * (1 - cumulativeAlpha));
+    const finalG = Math.round(g * cumulativeAlpha + 255 * (1 - cumulativeAlpha));
+    const finalB = Math.round(b * cumulativeAlpha + 255 * (1 - cumulativeAlpha));
+    
+    return `rgb(${finalR}, ${finalG}, ${finalB})`;
+  };
 
   // update cursor style when selection mode changes
   useEffect(() => {
@@ -122,6 +140,22 @@ function ServiceArea() {
       view.graphics.addMany(graphics, 0);
       serviceAreaGraphicsRef.current = graphics;
       setHasServiceAreas(graphics.length > 0);
+      
+      // clear summary statistics - user needs to recalculate
+      setSummaryCounts({});
+      setSmallestBreakWithPoints(null);
+      
+      // create legend items - sorted from smallest to largest
+      const uniqueBreaks = [...new Set(graphics.map(g => g.attributes?.breakValue).filter((v): v is number => typeof v === 'number'))];
+      uniqueBreaks.sort((a, b) => a - b);
+      
+      const items = uniqueBreaks.map((breakValue, index) => ({
+        breakValue,
+        // smaller breaks have more layers on top, so appear darker
+        color: calculateLayeredColor(uniqueBreaks.length - index)
+      }));
+      
+      setLegendItems(items);
     }
   }, [numBreaks, breakSize, travelModeName]);
 
@@ -352,24 +386,47 @@ function ServiceArea() {
     view.graphics.addMany(graphics);
     uploadedLocationGraphicsRef.current = graphics;
     setHasUploadedPoints(graphics.length > 0);
+    
+    // clear summary statistics - user needs to recalculate
+    setSummaryCounts({});
+    setSmallestBreakWithPoints(null);
   }, [uploadedLocations]);
 
   return (
     <>
       <div ref={mapDiv} className="map-container" />
       
-      {/* Service Area Settings - Left Side Top */}
+      {/* Left Sidebar - Scrollable */}
       <div style={{
         position: 'absolute',
         top: '10px',
         left: '10px',
-        backgroundColor: 'white',
-        padding: '10px',
-        borderRadius: '4px',
-        boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
+        bottom: '20px',
+        width: '250px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '5px',
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        paddingRight: '5px',
         zIndex: 1,
-        minWidth: '250px'
-      }}>
+        scrollbarWidth: 'thin',
+        scrollbarColor: 'transparent transparent'
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.scrollbarColor = '#888 #f1f1f1';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.scrollbarColor = 'transparent transparent';
+      }}
+      >
+        {/* Service Area Settings */}
+        <div style={{
+          backgroundColor: 'white',
+          padding: '10px',
+          borderRadius: '4px',
+          boxShadow: '0 1px 2px rgba(0,0,0,0.3)'
+        }}>
         <div style={{ marginBottom: '10px', fontWeight: 'bold' }}>
           Service Area Settings
         </div>
@@ -467,20 +524,15 @@ function ServiceArea() {
         >
           Run Analysis
         </button>
-      </div>
+        </div>
 
-      {/* Upload Locations - Left Side Bottom */}
-      <div style={{
-        position: 'absolute',
-        top: '350px',
-        left: '10px',
-        backgroundColor: 'white',
-        padding: '10px',
-        borderRadius: '4px',
-        boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
-        zIndex: 1,
-        minWidth: '250px'
-      }}>
+        {/* Upload Locations */}
+        <div style={{
+          backgroundColor: 'white',
+          padding: '10px',
+          borderRadius: '4px',
+          boxShadow: '0 1px 2px rgba(0,0,0,0.3)'
+        }}>
         <div style={{ marginBottom: '10px', fontWeight: 'bold' }}>
           Upload Locations
         </div>
@@ -508,20 +560,15 @@ function ServiceArea() {
             </div>
           )}
         </div>
-      </div>
+        </div>
 
-      {/* Summary Box - Right Top */}
-      <div style={{
-        position: 'absolute',
-        top: '10px',
-        right: '10px',
-        backgroundColor: 'white',
-        padding: '10px',
-        borderRadius: '4px',
-        boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
-        zIndex: 1,
-        minWidth: '220px'
-      }}>
+        {/* Summary */}
+        <div style={{
+          backgroundColor: 'white',
+          padding: '10px',
+          borderRadius: '4px',
+          boxShadow: '0 1px 2px rgba(0,0,0,0.3)'
+        }}>
         <div style={{ marginBottom: '8px', fontWeight: 'bold' }}>
           Summary
         </div>
@@ -558,7 +605,88 @@ function ServiceArea() {
             </div>
           </>
         )}
+        </div>
       </div>
+
+      {/* Legend - Top Right */}
+      {(legendItems.length > 0 || uploadedLocations.length > 0) && (
+        <div style={{
+          position: 'absolute',
+          top: '10px',
+          right: '10px',
+          backgroundColor: 'white',
+          padding: '10px',
+          borderRadius: '4px',
+          boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
+          zIndex: 1,
+          minWidth: '200px',
+          maxWidth: '250px'
+        }}>
+          <div style={{ marginBottom: '12px', fontWeight: 'bold', fontSize: '14px' }}>
+            Legend
+          </div>
+          
+          {legendItems.length > 0 && (
+            <>
+              <div style={{ fontSize: '12px', marginBottom: '6px', color: '#666', fontWeight: '600' }}>
+                Service Areas
+              </div>
+              {legendItems.map((item) => (
+                <div key={item.breakValue} style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  marginBottom: '6px',
+                  fontSize: '13px'
+                }}>
+                  <div style={{
+                    width: '30px',
+                    height: '20px',
+                    backgroundColor: item.color,
+                    border: '1px solid #ddd',
+                    marginRight: '8px',
+                    borderRadius: '2px',
+                    flexShrink: 0
+                  }} />
+                  <span>≤ {item.breakValue} min</span>
+                </div>
+              ))}
+            </>
+          )}
+          
+          {uploadedLocations.length > 0 && (
+            <>
+              <div style={{ 
+                fontSize: '12px', 
+                marginTop: legendItems.length > 0 ? '12px' : '0',
+                marginBottom: '6px', 
+                color: '#666',
+                fontWeight: '600'
+              }}>
+                Uploaded Points
+              </div>
+              <div style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                marginBottom: '6px',
+                fontSize: '13px'
+              }}>
+                <div style={{
+                  width: '12px',
+                  height: '12px',
+                  backgroundColor: 'rgba(0, 122, 194, 0.8)',
+                  border: '2px solid white',
+                  borderRadius: '50%',
+                  marginRight: '8px',
+                  marginLeft: '9px',
+                  flexShrink: 0,
+                  boxShadow: '0 0 0 1px #ddd'
+                }} />
+                <span>Locations ({uploadedLocations.length})</span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </>
   );
 }
