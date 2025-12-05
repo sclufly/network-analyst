@@ -12,6 +12,38 @@ import * as containsOperator from '@arcgis/core/geometry/operators/containsOpera
 import Point from '@arcgis/core/geometry/Point';
 import { ARCGIS_API_KEY } from '../config';
 
+// Import local modules
+import { ServiceAreaSettings } from './ServiceArea/ServiceAreaSettings';
+import { FileUpload } from './ServiceArea/FileUpload';
+import { SummaryStatistics } from './ServiceArea/SummaryStatistics';
+import { Legend } from './ServiceArea/Legend';
+import type { UploadedFile, LegendItem } from './ServiceArea/types';
+import {
+  calculateLayeredColor,
+  parseGeoJSONLocations,
+  parseColorToArray,
+  extractPointName,
+  extractPointId,
+  generatePointPopupContent,
+} from './ServiceArea/utils';
+import {
+  SERVICE_AREA_URL,
+  DEFAULT_NUM_BREAKS,
+  DEFAULT_BREAK_SIZE,
+  DEFAULT_TRAVEL_MODE,
+  MAP_CENTER,
+  MAP_ZOOM,
+  FILE_COLORS,
+  SERVICE_AREA_FILL_COLOR,
+  CLICK_MARKER_COLOR,
+  CLICK_MARKER_SIZE,
+  LOCATION_MARKER_COLOR,
+  LOCATION_MARKER_SIZE,
+  UPLOADED_POINT_SIZE,
+  UPLOADED_POINT_OUTLINE_COLOR,
+  UPLOADED_POINT_OUTLINE_WIDTH,
+} from './ServiceArea/constants';
+
 /**
  * Service Area Analysis Tool
  * Shows areas reachable within specified drive times from a selected point
@@ -25,49 +57,15 @@ function ServiceArea() {
   const clickMarkerRef = useRef<Graphic | null>(null);
   const uploadedLocationGraphicsRef = useRef<Graphic[]>([]);
   
-  const [numBreaks, setNumBreaks] = useState<number>(3);
-  const [breakSize, setBreakSize] = useState<number>(5);
-  const [travelModeName, setTravelModeName] = useState<string>("Driving Time");
-  const [uploadedFiles, setUploadedFiles] = useState<Array<{
-    name: string;
-    locations: any[];
-    color: string;
-    summaryCounts: Record<number, number>;
-    pointsByBreak: Record<number, Array<{name: string, id: string | number}>>;
-  }>>([]);
+  const [numBreaks, setNumBreaks] = useState<number>(DEFAULT_NUM_BREAKS);
+  const [breakSize, setBreakSize] = useState<number>(DEFAULT_BREAK_SIZE);
+  const [travelModeName, setTravelModeName] = useState<string>(DEFAULT_TRAVEL_MODE);
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [isSelectionMode, setIsSelectionMode] = useState<boolean>(false);
   const [smallestBreakContainingAll, setSmallestBreakContainingAll] = useState<number | null>(null);
   const [hasServiceAreas, setHasServiceAreas] = useState<boolean>(false);
   const [hasUploadedPoints, setHasUploadedPoints] = useState<boolean>(false);
-  const [legendItems, setLegendItems] = useState<Array<{breakValue: number, color: string}>>([]);
-  
-  const url = "https://route-api.arcgis.com/arcgis/rest/services/World/ServiceAreas/NAServer/ServiceArea_World";
-
-  // color palette for different uploaded files
-  const fileColors = [
-    'rgba(0, 122, 194, 0.8)',    // blue
-    'rgba(76, 175, 80, 0.8)',    // green
-    'rgba(255, 152, 0, 0.8)',    // orange
-    'rgba(156, 39, 176, 0.8)',   // purple
-    'rgba(255, 150, 190, 0.8)',  // pink
-  ];
-
-  // calculate visual color based on opacity layering
-  const calculateLayeredColor = (layerCount: number): string => {
-    // base color: rgba(255, 0, 0, 0.25)
-    const baseAlpha = 0.25;
-    const r = 255, g = 0, b = 0;
-    
-    // calculate cumulative opacity when layering multiple semi-transparent polygons
-    const cumulativeAlpha = 1 - Math.pow(1 - baseAlpha, layerCount);
-    
-    // blend with white background
-    const finalR = Math.round(r * cumulativeAlpha + 255 * (1 - cumulativeAlpha));
-    const finalG = Math.round(g * cumulativeAlpha + 255 * (1 - cumulativeAlpha));
-    const finalB = Math.round(b * cumulativeAlpha + 255 * (1 - cumulativeAlpha));
-    
-    return `rgb(${finalR}, ${finalG}, ${finalB})`;
-  };
+  const [legendItems, setLegendItems] = useState<LegendItem[]>([]);
 
   // update cursor style when selection mode changes
   useEffect(() => {
@@ -95,25 +93,25 @@ function ServiceArea() {
     // calculate break values from current state
     const breakValues = Array.from({ length: numBreaks }, (_, i) => (i + 1) * breakSize);
 
-    // create location graphic
+    // Create location graphic
     const locationGraphic = new Graphic({
       geometry: point,
       symbol: {
         type: "simple-marker",
-        color: "white",
-        size: 8,
+        color: LOCATION_MARKER_COLOR,
+        size: LOCATION_MARKER_SIZE,
       },
     });
     view.graphics.add(locationGraphic);
     clickMarkerRef.current = locationGraphic;
 
-    // fetch travel mode based on current selection
-    const networkDescription = await networkService.fetchServiceDescription(url);
+    // Fetch travel mode based on current selection
+    const networkDescription = await networkService.fetchServiceDescription(SERVICE_AREA_URL);
     travelModeRef.current = networkDescription.supportedTravelModes?.find(
       (travelMode) => travelMode.name === travelModeName
     );
 
-    // solve service area
+    // Solve service area
     const serviceAreaParameters = new ServiceAreaParameters({
       facilities: new FeatureSet({
         features: [locationGraphic],
@@ -125,7 +123,7 @@ function ServiceArea() {
       trimOuterPolygon: true,
     });
 
-    const result = await serviceArea.solve(url, serviceAreaParameters);
+    const result = await serviceArea.solve(SERVICE_AREA_URL, serviceAreaParameters);
     
     if (result.serviceAreaPolygons) {
       const features = result.serviceAreaPolygons.features || [];
@@ -138,7 +136,7 @@ function ServiceArea() {
 
         g.symbol = {
           type: "simple-fill",
-          color: "rgba(255, 0, 0, 0.25)",
+          color: SERVICE_AREA_FILL_COLOR,
         };
         
         // extract break value from service area attributes
@@ -190,8 +188,8 @@ function ServiceArea() {
     const view = new MapView({
       container: mapDiv.current,
       map,
-      center: [-79.4163, 43.7001],
-      zoom: 13,
+      center: MAP_CENTER,
+      zoom: MAP_ZOOM,
       constraints: {
         snapToZoom: false,
       },
@@ -226,8 +224,8 @@ function ServiceArea() {
           geometry: event.mapPoint,
           symbol: {
             type: "simple-marker",
-            color: "yellow",
-            size: 10,
+            color: CLICK_MARKER_COLOR,
+            size: CLICK_MARKER_SIZE,
             outline: {
               color: "white",
               width: 2
@@ -246,20 +244,7 @@ function ServiceArea() {
     };
   }, [isSelectionMode]);
 
-  const handleNumBreaksChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    setNumBreaks(parseInt(e.target.value));
-  };
 
-  const handleBreakSizeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = parseInt(e.target.value);
-    if (!isNaN(value) && value >= 1 && value <= 30) {
-      setBreakSize(value);
-    }
-  };
-
-  const handleTravelModeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    setTravelModeName(e.target.value);
-  };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -269,25 +254,9 @@ function ServiceArea() {
     reader.onload = (event) => {
       try {
         const geojson = JSON.parse(event.target?.result as string);
-        const locations: any[] = [];
+        const locations = parseGeoJSONLocations(geojson);
 
-        if (geojson.type === 'FeatureCollection' && geojson.features) {
-          geojson.features.forEach((feature: any) => {
-            if (feature.geometry && feature.geometry.coordinates) {
-              const coords = feature.geometry.coordinates;
-              // handle different geometry types
-              if (feature.geometry.type === 'Point') {
-                locations.push({ longitude: coords[0], latitude: coords[1], properties: feature.properties });
-              } else if (feature.geometry.type === 'MultiPoint') {
-                coords.forEach((coord: number[]) => {
-                  locations.push({ longitude: coord[0], latitude: coord[1], properties: feature.properties });
-                });
-              }
-            }
-          });
-        }
-
-        const color = fileColors[uploadedFiles.length % fileColors.length];
+        const color = FILE_COLORS[uploadedFiles.length % FILE_COLORS.length];
         // Clear all existing statistics when adding a new file
         setUploadedFiles(prev => [
           ...prev.map(f => ({ ...f, summaryCounts: {}, pointsByBreak: {} })),
@@ -367,21 +336,9 @@ function ServiceArea() {
           if (containsOperator.execute(polygon.geometry, point.geometry)) {
             counts[breakValue]++;
             
-            // extract name/ID from point attributes
             const attrs = point.attributes || {};
-            
-            // find any property with 'name' in the key (case-insensitive)
-            let name = '';
-            const nameKey = Object.keys(attrs).find(key => key.toLowerCase().includes('name'));
-            if (nameKey) {
-              name = String(attrs[nameKey]);
-            } else {
-              // fallback to ID if no name property found
-              const id = attrs.OBJECTID || attrs.id || attrs.ID || attrs._id || index + 1;
-              name = `Point ${id}`;
-            }
-            
-            const id = attrs.OBJECTID || attrs.id || attrs.ID || attrs._id || index + 1;
+            const name = extractPointName(attrs, index);
+            const id = extractPointId(attrs, index);
             
             pointsByBreak[breakValue].push({ name, id });
             break;
@@ -446,21 +403,17 @@ function ServiceArea() {
           spatialReference: view.spatialReference
         });
 
-        // Parse color string to array format
-        const colorMatch = file.color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+),?\s*([\d.]+)?\)/);
-        const color = colorMatch ? 
-          [parseInt(colorMatch[1]), parseInt(colorMatch[2]), parseInt(colorMatch[3]), parseFloat(colorMatch[4] || '1')] :
-          [0, 122, 194, 0.8];
+        const color = parseColorToArray(file.color);
 
         const graphic = new Graphic({
           geometry: ptGeom,
           symbol: {
             type: 'simple-marker',
             color: color,
-            size: 10,
+            size: UPLOADED_POINT_SIZE,
             outline: {
-              color: [255, 255, 255],
-              width: 2
+              color: UPLOADED_POINT_OUTLINE_COLOR,
+              width: UPLOADED_POINT_OUTLINE_WIDTH
             }
           } as any,
           attributes: {
@@ -470,11 +423,7 @@ function ServiceArea() {
           },
           popupTemplate: {
             title: location.properties?.AGENCY_NAME || location.properties?.name || 'Location',
-            content: `<b>File:</b> ${file.name}<br>` + 
-              (location.properties ? Object.entries(location.properties)
-                .filter(([key]) => key !== 'OBJECTID' && key !== '_id')
-                .map(([key, value]) => `<b>${key}:</b> ${value}`)
-                .join('<br>') : '')
+            content: generatePointPopupContent(file.name, location.properties)
           }
         });
 
@@ -520,402 +469,34 @@ function ServiceArea() {
         e.currentTarget.style.scrollbarColor = 'transparent transparent';
       }}
       >
-        {/* Service Area Settings */}
-        <div style={{
-          backgroundColor: 'white',
-          padding: '10px',
-          borderRadius: '4px',
-          boxShadow: '0 1px 2px rgba(0,0,0,0.3)'
-        }}>
-        <div style={{ marginBottom: '10px', fontWeight: 'bold' }}>
-          Service Area Settings
-        </div>
-        
-        <button
-          onClick={handleToggleSelectionMode}
-          style={{
-            padding: '8px 12px',
-            width: '100%',
-            backgroundColor: isSelectionMode ? '#28a745' : '#6c757d',
-            color: 'white',
-            border: 'none',
-            borderRadius: '3px',
-            cursor: 'pointer',
-            fontWeight: 'bold',
-            marginBottom: '10px'
-          }}
-        >
-          {isSelectionMode ? 'Selection Mode Active' : 'Select Location'}
-        </button>
+        <ServiceAreaSettings
+          isSelectionMode={isSelectionMode}
+          travelModeName={travelModeName}
+          numBreaks={numBreaks}
+          breakSize={breakSize}
+          onToggleSelectionMode={handleToggleSelectionMode}
+          onTravelModeChange={setTravelModeName}
+          onNumBreaksChange={setNumBreaks}
+          onBreakSizeChange={setBreakSize}
+          onRunAnalysis={handleUpdateMap}
+        />
 
-        <div style={{ marginBottom: '10px' }}>
-          <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px' }}>
-            Travel mode:
-          </label>
-          <select
-            value={travelModeName}
-            onChange={handleTravelModeChange}
-            style={{
-              padding: '5px',
-              width: '100%',
-              border: '1px solid #ccc',
-              borderRadius: '3px'
-            }}
-          >
-            <option value="Driving Time">Driving Time</option>
-            <option value="Walking Time">Walking Time</option>
-          </select>
-        </div>
+        <FileUpload
+          uploadedFiles={uploadedFiles}
+          onFileUpload={handleFileUpload}
+          onRemoveFile={handleRemoveFile}
+        />
 
-        <div style={{ marginBottom: '10px' }}>
-          <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px' }}>
-            Number of breaks:
-          </label>
-          <select
-            value={numBreaks}
-            onChange={handleNumBreaksChange}
-            style={{
-              padding: '5px',
-              width: '100%',
-              border: '1px solid #ccc',
-              borderRadius: '3px'
-            }}
-          >
-            <option value={1}>1</option>
-            <option value={2}>2</option>
-            <option value={3}>3</option>
-            <option value={4}>4</option>
-            <option value={5}>5</option>
-          </select>
-        </div>
-
-        <div style={{ marginBottom: '10px' }}>
-          <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px' }}>
-            Break size (minutes):
-          </label>
-          <input
-            type="number"
-            min="1"
-            max="30"
-            value={breakSize}
-            onChange={handleBreakSizeChange}
-            style={{
-              padding: '5px',
-              width: '100%',
-              border: '1px solid #ccc',
-              borderRadius: '3px',
-              boxSizing: 'border-box'
-            }}
-          />
-        </div>
-
-        <button
-          onClick={handleUpdateMap}
-          style={{
-            padding: '8px 12px',
-            width: '100%',
-            backgroundColor: '#0079c1',
-            color: 'white',
-            border: 'none',
-            borderRadius: '3px',
-            cursor: 'pointer',
-            fontWeight: 'bold'
-          }}
-        >
-          Run Analysis
-        </button>
-        </div>
-
-        {/* Upload Locations */}
-        <div style={{
-          backgroundColor: 'white',
-          padding: '10px',
-          borderRadius: '4px',
-          boxShadow: '0 1px 2px rgba(0,0,0,0.3)'
-        }}>
-        <div style={{ marginBottom: '10px', fontWeight: 'bold' }}>
-          Upload Locations
-        </div>
-        
-        <div>
-          <input
-            type="file"
-            accept=".geojson,.json"
-            onChange={handleFileUpload}
-            style={{ display: 'none' }}
-            id="file-upload-input"
-          />
-          <label htmlFor="file-upload-input">
-            <button
-              onClick={() => document.getElementById('file-upload-input')?.click()}
-              style={{
-                padding: '8px 12px',
-                width: '100%',
-                backgroundColor: '#0079c1',
-                color: 'white',
-                border: 'none',
-                borderRadius: '3px',
-                cursor: 'pointer',
-                fontWeight: 'bold',
-                marginBottom: '8px'
-              }}
-            >
-              Add GeoJSON File
-            </button>
-          </label>
-          {uploadedFiles.length > 0 && (
-            <div style={{ marginTop: '8px' }}>
-              {uploadedFiles.map((file, index) => (
-                <div key={index} style={{ 
-                  display: 'flex', 
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: '6px 8px', 
-                  marginBottom: '4px',
-                  backgroundColor: '#e8f4f8', 
-                  borderRadius: '3px', 
-                  fontSize: '12px'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}>
-                    <div style={{
-                      width: '12px',
-                      height: '12px',
-                      backgroundColor: file.color,
-                      border: '1px solid white',
-                      borderRadius: '50%',
-                      marginRight: '6px',
-                      flexShrink: 0,
-                      boxShadow: '0 0 0 1px #ddd'
-                    }} />
-                    <span style={{ 
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap'
-                    }} title={file.name}>
-                      {file.name} ({file.locations.length})
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => handleRemoveFile(index)}
-                    style={{
-                      marginLeft: '8px',
-                      padding: '2px 6px',
-                      fontSize: '11px',
-                      backgroundColor: '#f44336',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '3px',
-                      cursor: 'pointer',
-                      flexShrink: 0
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        </div>
-
-        {/* Summary */}
-        <div style={{
-          backgroundColor: 'white',
-          padding: '10px',
-          borderRadius: '4px',
-          boxShadow: '0 1px 2px rgba(0,0,0,0.3)'
-        }}>
-        <div style={{ marginBottom: '8px', fontWeight: 'bold' }}>
-          Summary Statistics
-        </div>
-
-        <button
-          onClick={handleCalculateStats}
-          disabled={!hasServiceAreas || !hasUploadedPoints}
-          style={{
-            padding: '6px 10px',
-            width: '100%',
-            backgroundColor: (hasServiceAreas && hasUploadedPoints) ? '#0079c1' : '#ccc',
-            color: 'white',
-            border: 'none',
-            borderRadius: '3px',
-            cursor: (hasServiceAreas && hasUploadedPoints) ? 'pointer' : 'not-allowed',
-            fontSize: '13px',
-            fontWeight: 'bold',
-            marginBottom: '10px'
-          }}
-        >
-          Calculate Stats
-        </button>
-
-        {uploadedFiles.length === 0 || uploadedFiles.every(f => Object.keys(f.summaryCounts).length === 0) ? (
-          <div style={{ fontSize: '13px' }}>Click Calculate Stats to see results.</div>
-        ) : (
-          <>
-            {uploadedFiles.map((file, fileIndex) => {
-              const hasStats = Object.keys(file.summaryCounts).length > 0;
-              if (!hasStats) return null;
-
-              return (
-                <div key={fileIndex} style={{ marginBottom: '16px' }}>
-                  <div style={{
-                    fontSize: '13px',
-                    fontWeight: 'bold',
-                    color: '#0079c1',
-                    marginBottom: '8px',
-                    display: 'flex',
-                    alignItems: 'center'
-                  }}>
-                    <div style={{
-                      width: '12px',
-                      height: '12px',
-                      backgroundColor: file.color,
-                      border: '1px solid white',
-                      borderRadius: '50%',
-                      marginRight: '6px',
-                      flexShrink: 0,
-                      boxShadow: '0 0 0 1px #ddd'
-                    }} />
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={file.name}>
-                      {file.name}
-                    </span>
-                  </div>
-
-                  {Object.keys(file.summaryCounts).sort((a, b) => parseInt(a) - parseInt(b)).map((k) => {
-                    const breakValue = parseInt(k, 10);
-                    const count = file.summaryCounts[breakValue];
-                    const points = file.pointsByBreak[breakValue] || [];
-                    
-                    return (
-                      <div key={k} style={{ marginBottom: '8px', marginLeft: '18px' }}>
-                        {count > 0 ? (
-                          <details style={{ cursor: 'pointer' }}>
-                            <summary style={{ 
-                              fontSize: '13px', 
-                              fontWeight: 'bold',
-                              color: '#333',
-                              listStyle: 'none',
-                              userSelect: 'none',
-                              display: 'flex',
-                              alignItems: 'center'
-                            }}>
-                              <span className="arrow" style={{ fontSize: '11px', color: '#666', marginRight: '6px', transition: 'transform 0.2s' }}>▶</span>
-                              <span>≤ {breakValue} min ({count} point{count !== 1 ? 's' : ''})</span>
-                            </summary>
-                            <div style={{ fontSize: '12px', paddingLeft: '20px', paddingTop: '4px', color: '#555' }}>
-                              {points.map((point, idx) => (
-                                <div key={idx} style={{ marginBottom: '2px' }}>
-                                  • {point.name} (ID: {point.id})
-                                </div>
-                              ))}
-                            </div>
-                          </details>
-                        ) : (
-                          <div style={{ 
-                            fontSize: '13px', 
-                            fontWeight: 'bold',
-                            color: '#333'
-                          }}>
-                            ≤ {breakValue} min ({count} point{count !== 1 ? 's' : ''})
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-            <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #eee', fontWeight: 'bold', fontSize: '13px', color: '#0079c1' }}>
-              {smallestBreakContainingAll ? `Smallest break with at least one point from each file: ${smallestBreakContainingAll} minutes` : 'Not all files have points within service areas'}
-            </div>
-          </>
-        )}
-        </div>
+        <SummaryStatistics
+          uploadedFiles={uploadedFiles}
+          hasServiceAreas={hasServiceAreas}
+          hasUploadedPoints={hasUploadedPoints}
+          smallestBreakContainingAll={smallestBreakContainingAll}
+          onCalculateStats={handleCalculateStats}
+        />
       </div>
 
-      {/* Legend - Top Right */}
-      {(legendItems.length > 0 || uploadedFiles.length > 0) && (
-        <div style={{
-          position: 'absolute',
-          top: '10px',
-          right: '10px',
-          backgroundColor: 'white',
-          padding: '10px',
-          borderRadius: '4px',
-          boxShadow: '0 1px 2px rgba(0,0,0,0.3)',
-          zIndex: 1,
-          minWidth: '200px',
-          maxWidth: '250px'
-        }}>
-          <div style={{ marginBottom: '12px', fontWeight: 'bold', fontSize: '14px' }}>
-            Legend
-          </div>
-          
-          {legendItems.length > 0 && (
-            <>
-              <div style={{ fontSize: '12px', marginBottom: '6px', color: '#666', fontWeight: '600' }}>
-                Service Areas
-              </div>
-              {legendItems.map((item) => (
-                <div key={item.breakValue} style={{ 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  marginBottom: '6px',
-                  fontSize: '13px'
-                }}>
-                  <div style={{
-                    width: '30px',
-                    height: '20px',
-                    backgroundColor: item.color,
-                    border: '1px solid #ddd',
-                    marginRight: '8px',
-                    borderRadius: '2px',
-                    flexShrink: 0
-                  }} />
-                  <span>≤ {item.breakValue} min</span>
-                </div>
-              ))}
-            </>
-          )}
-          
-          {uploadedFiles.length > 0 && (
-            <>
-              <div style={{ 
-                fontSize: '12px', 
-                marginTop: legendItems.length > 0 ? '12px' : '0',
-                marginBottom: '6px', 
-                color: '#666',
-                fontWeight: '600'
-              }}>
-                Uploaded Files
-              </div>
-              {uploadedFiles.map((file, index) => (
-                <div key={index} style={{ 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  marginBottom: '6px',
-                  fontSize: '13px'
-                }}>
-                  <div style={{
-                    width: '12px',
-                    height: '12px',
-                    backgroundColor: file.color,
-                    border: '2px solid white',
-                    borderRadius: '50%',
-                    marginRight: '8px',
-                    marginLeft: '9px',
-                    flexShrink: 0,
-                    boxShadow: '0 0 0 1px #ddd'
-                  }} />
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={file.name}>
-                    {file.name} ({file.locations.length})
-                  </span>
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-      )}
+      <Legend legendItems={legendItems} uploadedFiles={uploadedFiles} />
     </>
   );
 }
